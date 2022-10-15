@@ -5,6 +5,8 @@ from __main__ import *
 from ghidra.app.emulator import EmulatorHelper
 from ghidra.program.model.address import Address
 
+import jarray
+
 def bytearray_to_java_bytes(buf):
     return jarray.array(((x if x < 128 else (x - 256)) for x in bytearray(buf)), "b")
 
@@ -45,8 +47,8 @@ class Emulator(object):
     def set_reg(self, name, value):
         return self.emulator.writeRegister(name, value)
 
-    def emulate_range(self, start, end, regs=None, hooks=None):
-        self.set_sp(0x0FFFFFFF)
+    def emulate_range(self, start, end, sp, regs=None, hooks=None):
+        self.set_sp(sp)
 
         if regs:
             for reg, value in regs.items():

@@ -2,21 +2,12 @@
 # Contains derivative code from https://github.com/SamL98/GhidraStackStrings/blob/master/emulator_utils.py and
 # https://maxkersten.nl/binary-analysis-course/analysis-scripts/ghidra-script-to-decrypt-strings-in-amadey-1-09/
 
-from pydoc import resolve
-from ghidra.app.decompiler import (
-    ClangFuncNameToken,
-    ClangNode,
-    ClangOpToken,
-    ClangTokenGroup,
-    ClangVariableToken,
-    DecompInterface,
-)
+from ghidra.app.decompiler import DecompInterface
 from ghidra.app.util import PseudoDisassembler
 from ghidra.program.flatapi import FlatProgramAPI
 from ghidra.program.model.address import Address
 from ghidra.program.model.pcode import PcodeOp
 
-import jarray
 import time
 
 from emulator import Emulator
@@ -85,13 +76,17 @@ def get_call_arguments(addr):
 
     caller = getFunctionBefore(addr)
     if not caller:
-        raise Exception("Failed to get function before address!")
+        raise Exception("Failed to get function before {:#x}!".format(addr.getOffset()))
 
     decomp_interface = DecompInterface()
     decomp_interface.openProgram(currentProgram)
     decomp_result = decomp_interface.decompileFunction(caller, 10, monitor)
     if not decomp_result.decompileCompleted():
-        raise Exception("Failed to decompile function!")
+        raise Exception(
+            "Failed to decompile function at {:#x}!".format(
+                caller.getEntryPoint().getOffset()
+            )
+        )
 
     high_function = decomp_result.getHighFunction()
     ops = high_function.getPcodeOps(addr)
@@ -110,7 +105,14 @@ def get_call_arguments(addr):
 
 def resolve_string_loc(varnode):
     if varnode.isUnique():
-        return None  # TODO: Resolve unique variables
+        op = varnode.getDef()
+
+        if op.getOpcode() == PcodeOp.COPY or op.getOpcode() == PcodeOp.MULTIEQUAL:
+            inputs = op.getInputs()
+
+            return get_indirect_ptr(inputs[0].getAddress())
+
+        return None
     else:
         return get_indirect_ptr(varnode.getAddress())
 
@@ -122,13 +124,13 @@ def decrypt_string(buf, size):
     emu.emulate_range(
         STRING_START,
         STRING_END,
+        sp=0x0FFFFFFF,
         regs={"o0": 0x0BBBBBBB, "o1": 0x0AAAAAAA, "o2": size},
     )
 
     out = bytearray(emu.read_mem(0x0BBBBBBB, size))
-    out.pop()
 
-    return out.decode("ascii")
+    return out.decode("utf-8")
 
 
 def umul_handler(ctx):
@@ -144,13 +146,14 @@ def decrypt_message(buf, size):
     emu.emulate_range(
         MESSAGE_START,
         MESSAGE_END,
+        sp=0x0FFFFFFF,
         regs={"o0": 0x0BBBBBBB, "o1": 0x0AAAAAAA, "o2": size},
         hooks={UMUL_START: umul_handler},
     )
 
     out = bytearray(emu.read_mem(0x0BBBBBBB, size))
 
-    return out.decode("ascii")
+    return out.decode("utf-8")
 
 
 def do_strings():
@@ -176,7 +179,9 @@ def do_strings():
             print("WARNING - unable to resolve size for {:#x}".format(xref.getOffset()))
             continue
 
-        if not enc_buf_ptr:
+        if (
+            not enc_buf_ptr or enc_buf_ptr.getOffset() == 0x5D408
+        ):  # This specific string causes Ghidra's decompiler to freak out (appears to be invalid Unicode?)
             print(
                 "WARNING - unable to resolve string location for {:#x}".format(
                     xref.getOffset()
@@ -185,7 +190,7 @@ def do_strings():
             continue
 
         enc_buf = get_bytes(enc_buf_ptr, size.getOffset() + 1)
-        dec = decrypt_string(enc_buf, size.getOffset())
+        dec = decrypt_string(enc_buf, size.getOffset() - 1)
         set_comment(xref, dec)
         print('{:#x} - "{}"'.format(xref.getOffset(), dec))
         NUMBER = NUMBER + 1
@@ -233,7 +238,7 @@ def main():
     do_messages()
 
     elapsed = time.time() - BEGIN
-    print("{} strings decrypted in {} seconds.".format(NUMBER, elapsed))
+    print("{} strings decrypted in {:.2f} seconds.".format(NUMBER, elapsed))
 
 
 main()
